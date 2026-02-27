@@ -1,0 +1,6 @@
+com\sphat1\consolidation\WorkloadGenerator.class
+com\sphat1\consolidation\DataCenterConfig.class
+com\sphat1\consolidation\SimulationRunner.class
+com\sphat1\consolidation\WorkloadGenerator$1.class
+com\sphat1\consolidation\HeuristicConsolidationPolicy.class
+com\sphat1\consolidation\WorkloadGenerator$Scenario.class
