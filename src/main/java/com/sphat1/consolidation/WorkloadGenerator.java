@@ -4,23 +4,46 @@ import org.cloudbus.cloudsim.UtilizationModel;
 import java.util.Random;
 
 public class WorkloadGenerator {
+
     public enum Scenario { STEADY, PEAK, VARIABLE }
 
-    public static UtilizationModel get(Scenario s, long seed) {
-        return switch (s) {
-            case STEADY   -> time -> 0.45 + 0.10 * Math.sin(time / 100.0);
-            case PEAK     -> time -> {
-                double c = time % 500;
-                return (c > 200 && c < 350) ? 0.85 : 0.30;
-            };
-            case VARIABLE -> new UtilizationModel() {
-                final Random r = new Random(seed);
-                public double getUtilization(double time) {
-                    double base = 0.4 + 0.3 * r.nextDouble();
-                    return r.nextDouble() < 0.15
-                        ? Math.min(base + 0.4, 1.0) : base;
-                }
-            };
-        };
+    public static UtilizationModel createUtilizationModel(
+            Scenario scenario, int vmIndex, Random rand) {
+
+        switch (scenario) {
+
+            case STEADY: {
+                double base      = 0.35;
+                double amplitude = 0.10;
+                double frequency = 1.0 / 600.0;
+                double phase     = rand.nextDouble() * 2 * Math.PI;
+                return new UtilizationModelDynamic(base, amplitude, frequency, phase);
+            }
+
+            case PEAK: {
+                double base      = 0.15 + rand.nextDouble() * 0.10;
+                double amplitude = 0.05;
+                double frequency = 1.0 / 800.0;
+                double phase     = rand.nextDouble() * 2 * Math.PI;
+                boolean spikes   = rand.nextDouble() < 0.40;
+                double peakTime  = 300.0;
+                double peakAmp   = spikes ? 0.70 : 0.0;
+                double peakWidth = 80.0;
+                return new UtilizationModelDynamic(
+                    base, amplitude, frequency, phase,
+                    peakTime, peakAmp, peakWidth);
+            }
+
+            case VARIABLE: {
+                double base      = 0.10 + rand.nextDouble() * 0.60;
+                double amplitude = 0.05 + rand.nextDouble() * 0.20;
+                double frequency = (0.5 + rand.nextDouble()) / 600.0;
+                double phase     = rand.nextDouble() * 2 * Math.PI;
+                return new UtilizationModelDynamic(base, amplitude, frequency, phase);
+            }
+
+            default:
+                throw new IllegalArgumentException("Unknown scenario: " + scenario);
+        }
     }
 }
