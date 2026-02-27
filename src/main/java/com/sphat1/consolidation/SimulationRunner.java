@@ -15,8 +15,7 @@ public class SimulationRunner {
         }
     }
 
-    static void runScenario(WorkloadGenerator.Scenario scenario)
-            throws Exception {
+    static void runScenario(WorkloadGenerator.Scenario scenario) throws Exception {
         CloudSim.init(1, Calendar.getInstance(), false);
 
         List<PowerHost> hosts = DataCenterConfig.createHosts();
@@ -30,19 +29,26 @@ public class SimulationRunner {
 
         PowerDatacenter dc = new PowerDatacenter(
             "Datacenter", chars, policy, new LinkedList<>(), 300);
+        dc.setDisableMigrations(false); // ensure migrations are enabled
 
         DatacenterBroker broker = new DatacenterBroker("Broker");
-
         List<PowerVm> vms = DataCenterConfig.createVms(broker.getId());
-
-        // 7G: submitGuestList instead of submitVmList
         broker.submitGuestList(new ArrayList<>(vms));
 
+        // Key fix: vary cloudlet length and utilization by scenario
         List<Cloudlet> cloudlets = new ArrayList<>();
-        UtilizationModel um = WorkloadGenerator.get(scenario, 42L);
+        Random rand = new Random(42);
         for (int i = 0; i < DataCenterConfig.NUM_VMS; i++) {
-            Cloudlet cl = new Cloudlet(
-                i, 100_000, 1, 300, 300, um, um, um);
+            UtilizationModel um = WorkloadGenerator.get(scenario, i);
+
+            // Longer cloudlets = more simulation intervals = more consolidation decisions
+            long length = switch (scenario) {
+                case STEADY   -> 50_000;
+                case PEAK     -> 80_000;   // longer to capture peak/off-peak cycles
+                case VARIABLE -> 100_000;  // longest to capture burst behavior
+            };
+
+            Cloudlet cl = new Cloudlet(i, length, 1, 300, 300, um, um, um);
             cl.setUserId(broker.getId());
             cloudlets.add(cl);
         }
@@ -53,7 +59,7 @@ public class SimulationRunner {
 
         double energyKwh = dc.getPower() / 3_600_000.0;
         System.out.printf("Energy:         %.4f kWh%n", energyKwh);
-        System.out.printf("VM Migrations:  %d%n",  policy.getMigrations());
-        System.out.printf("SLA Violations: %d%n",  policy.getSlaViolations());
+        System.out.printf("VM Migrations:  %d%n", policy.getMigrations());
+        System.out.printf("SLA Violations: %d%n", policy.getSlaViolations());
     }
 }
