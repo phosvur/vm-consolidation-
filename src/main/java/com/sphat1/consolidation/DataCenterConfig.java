@@ -2,12 +2,12 @@ package com.sphat1.consolidation;
 
 import org.cloudbus.cloudsim.*;
 import org.cloudbus.cloudsim.power.*;
-//import org.cloudbus.cloudsim.power.models.PowerModelSpecPower;
-import org.cloudbus.cloudsim.power.models.PowerModelSpecPowerIbmX3250XeonX3470;
+import org.cloudbus.cloudsim.power.models.PowerModelSpecPowerHpProLiantMl110G4Xeon3040;
 import org.cloudbus.cloudsim.provisioners.*;
-import java.util.*;	
+import java.util.*;
 
 public class DataCenterConfig {
+
     public static final int NUM_HOSTS = 10;
     public static final int HOST_CPU  = 200;
     public static final int NUM_VMS   = 25;
@@ -17,28 +17,25 @@ public class DataCenterConfig {
         for (int i = 0; i < NUM_HOSTS; i++) {
             List<Pe> pes = new ArrayList<>();
             pes.add(new Pe(0, new PeProvisionerSimple(HOST_CPU)));
-            PowerHost host = new PowerHost(
-            	    i,
-            	    new RamProvisionerSimple(2048),
-            	    new BwProvisionerSimple(10000),
-            	    1_000_000,
-            	    pes,
-            	    new VmSchedulerTimeShared(pes),
-            	    new PowerModelSpecPowerIbmX3250XeonX3470() // built‑in power model
-            	);
-            	hosts.add(host);
-
+            hosts.add(new PowerHost(
+                i,
+                new RamProvisionerSimple(16384),  // 16 GB — plenty of headroom for migrations
+                new BwProvisionerSimple(100000),  // 100 Gbps — remove BW as bottleneck too
+                1_000_000,
+                pes,
+                new VmSchedulerTimeShared(pes),
+                new PowerModelSpecPowerHpProLiantMl110G4Xeon3040()
+            ));
         }
         return hosts;
     }
 
-    public static List<PowerVm> createVms(int brokerId) {
+    // VMs now take a mips array so each scenario can set its own demands
+    public static List<PowerVm> createVms(int brokerId, int[] mipsValues) {
         List<PowerVm> vms = new ArrayList<>();
-        Random rand = new Random(42);
         for (int i = 0; i < NUM_VMS; i++) {
-            int mips = 15 + rand.nextInt(51); // 15–65 units
             vms.add(new PowerVm(
-                i, brokerId, mips, 1,
+                i, brokerId, mipsValues[i], 1,
                 512, 1000, 10000, 1, "Xen",
                 new CloudletSchedulerTimeShared(), 300
             ));
