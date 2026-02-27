@@ -29,7 +29,7 @@ public class HeuristicConsolidationPolicy
     // Snapshot: hostId → total allocated MIPS across all its VMs
     private final Map<Integer, Double> hostMipsSnapshot = new HashMap<>();
     
-    // NEW: Track committed peak MIPS per host for this planning cycle
+    // Track committed peak MIPS per host for this planning cycle
     private final Map<Integer, Double> committedPeakMips = new HashMap<>();
 
     public HeuristicConsolidationPolicy(
@@ -46,6 +46,13 @@ public class HeuristicConsolidationPolicy
         vmMipsSnapshot.clear();
         hostMipsSnapshot.clear();
         committedPeakMips.clear();  // Reset committed peak tracking
+        
+        // 🔧 NEW: Avoid t=0 instability (CloudSim startup artifacts)
+        if (org.cloudbus.cloudsim.core.CloudSim.clock() <= 0.1) {
+            System.out.println("  [Consolidation] Skipping snapshot at t=" + org.cloudbus.cloudsim.core.CloudSim.clock());
+            return new ArrayList<>();  // Return empty plan
+        }
+
         for (PowerHost h : this.<PowerHost>getHostList()) {
             double hostTotal = 0;
             for (GuestEntity g : h.getGuestList()) {
@@ -116,6 +123,11 @@ public class HeuristicConsolidationPolicy
         Map<Integer, Double> committed = new HashMap<>();
 
         for (GuestEntity vm : candidates) {
+            // Prevent re-migrating VMs already in migration
+            if (((Vm) vm).isInMigration()) {
+                continue;
+            }
+            
             PowerHost dest = greedyFit(vm, committed);
             if (dest != null) {
                 plan.add(new GuestMapping(vm, dest));
@@ -123,7 +135,7 @@ public class HeuristicConsolidationPolicy
                 double vmMips = vmMipsSnapshot.getOrDefault(vm.getId(), 0.0);
                 double vmPeakMips = ((Vm) vm).getMips();
                 committed.merge(dest.getId(), vmMips, Double::sum);
-                committedPeakMips.merge(dest.getId(), vmPeakMips, Double::sum);  // Track peak
+                committedPeakMips.merge(dest.getId(), vmPeakMips, Double::sum);
                 System.out.printf("  [Migration] VM #%d (%.0f MIPS) → Host #%d%n",
                     ((Vm) vm).getId(), vmMips, dest.getId());
             } else {
