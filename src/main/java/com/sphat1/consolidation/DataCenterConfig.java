@@ -9,18 +9,18 @@ import java.util.*;
 public class DataCenterConfig {
 
     public static final int NUM_HOSTS = 10;
-    public static final int HOST_CPU  = 200;
+    public static final int HOST_CPU  = 400;   // doubled from 200
     public static final int NUM_VMS   = 25;
 
     public static List<PowerHost> createHosts() {
         List<PowerHost> hosts = new ArrayList<>();
         for (int i = 0; i < NUM_HOSTS; i++) {
             List<Pe> pes = new ArrayList<>();
-            pes.add(new Pe(0, new PeProvisionerSimple(HOST_CPU)));
+            pes.add(new Pe(0, new PeProvisionerSimple(HOST_CPU))); // 400 MIPS
             hosts.add(new PowerHost(
                 i,
-                new RamProvisionerSimple(16384),  // 16 GB — plenty of headroom for migrations
-                new BwProvisionerSimple(100000),  // 100 Gbps — remove BW as bottleneck too
+                new RamProvisionerSimple(16384),   // 16 GB RAM
+                new BwProvisionerSimple(100000),  // 100 Gbps BW
                 1_000_000,
                 pes,
                 new VmSchedulerTimeShared(pes),

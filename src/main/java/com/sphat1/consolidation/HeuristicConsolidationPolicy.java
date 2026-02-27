@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.cloudbus.cloudsim.Cloudlet;
 import org.cloudbus.cloudsim.Host;
 import org.cloudbus.cloudsim.Vm;
 import org.cloudbus.cloudsim.core.GuestEntity;
@@ -13,17 +14,23 @@ import org.cloudbus.cloudsim.power.PowerHost;
 import org.cloudbus.cloudsim.power.PowerVmAllocationPolicyMigrationAbstract;
 import org.cloudbus.cloudsim.selectionPolicies.SelectionPolicy;
 
+@SuppressWarnings("deprecation")  // Suppress deprecated warnings for CloudSim 7.0.1
 public class HeuristicConsolidationPolicy
         extends PowerVmAllocationPolicyMigrationAbstract {
 
-    static final double T_UPPER = 0.80;
+    static final double T_UPPER = 0.50;
     static final double T_LOWER = 0.20;
 
     private int migrations    = 0;
     private int slaViolations = 0;
 
-    // Cache: vmId → (vmMips, sourceHostId) captured while VMs are still alive
-    private final Map<Integer, double[]> vmSnapshot = new HashMap<>();
+    // Snapshot: vmId → allocated MIPS (captured while VMs are alive)
+    private final Map<Integer, Double> vmMipsSnapshot = new HashMap<>();
+    // Snapshot: hostId → total allocated MIPS across all its VMs
+    private final Map<Integer, Double> hostMipsSnapshot = new HashMap<>();
+    
+    // NEW: Track committed peak MIPS per host for this planning cycle
+    private final Map<Integer, Double> committedPeakMips = new HashMap<>();
 
     public HeuristicConsolidationPolicy(
             List<? extends Host> hosts,
@@ -35,85 +42,93 @@ public class HeuristicConsolidationPolicy
     public List<GuestMapping> optimizeAllocation(List<? extends GuestEntity> vmList) {
         List<GuestMapping> plan = new ArrayList<>();
 
-        // ── Step 1: snapshot current state while VMs are still on hosts ──
-        vmSnapshot.clear();
+     // ── Step 1: snapshot MIPS allocations before any deallocation ──
+        vmMipsSnapshot.clear();
+        hostMipsSnapshot.clear();
+        committedPeakMips.clear();  // Reset committed peak tracking
         for (PowerHost h : this.<PowerHost>getHostList()) {
+            double hostTotal = 0;
             for (GuestEntity g : h.getGuestList()) {
-                double mips = h.getTotalAllocatedMipsForGuest(g);
-                vmSnapshot.put(g.getId(), new double[]{mips, h.getId()});
+                double vmPeakMips = ((Vm) g).getMips();
+                double utilFraction = 0;
+                for (Cloudlet rc :
+                        ((Vm) g).getCloudletScheduler().getCloudletExecList()) {
+                    utilFraction += rc.getUtilizationOfCpu(org.cloudbus.cloudsim.core.CloudSim.clock());
+                }
+                utilFraction = Math.min(1.0, utilFraction);
+                double effectiveMips = vmPeakMips * utilFraction;
+                vmMipsSnapshot.put(g.getId(), effectiveMips);
+                hostTotal += effectiveMips;
             }
+            hostMipsSnapshot.put(h.getId(), hostTotal);
         }
 
-        // ── Step 2: classify hosts ──
+        // ── Step 2: classify hosts using snapshot utilization ──
         List<PowerHost> overloaded  = new ArrayList<>();
         List<PowerHost> underloaded = new ArrayList<>();
 
         for (PowerHost h : this.<PowerHost>getHostList()) {
-            double u = h.getUtilizationOfCpu();
-            System.out.printf("  [Consolidation] Host #%d util=%.2f vms=%d%n",
-                h.getId(), u, h.getGuestList().size());
+            double allocMips = hostMipsSnapshot.getOrDefault(h.getId(), 0.0);
+            double u = allocMips / h.getTotalMips();
+            int vmCount = h.getGuestList().size();
+            System.out.printf("  [Consolidation] Host #%d snapshotUtil=%.2f vms=%d%n",
+                h.getId(), u, vmCount);
             if (u > T_UPPER) {
                 overloaded.add(h);
                 slaViolations++;
-            } else if (u < T_LOWER && !h.getGuestList().isEmpty()) {
+            } else if (u < T_LOWER && vmCount > 0) {
                 underloaded.add(h);
             }
         }
         System.out.printf("  [Consolidation] Overloaded: %d, Underloaded: %d%n",
             overloaded.size(), underloaded.size());
 
-        // ── Step 3: select candidate VMs to migrate ──
+        // ── Step 3: select candidate VMs ──
         List<GuestEntity> candidates = new ArrayList<>();
 
         for (PowerHost h : overloaded) {
             List<GuestEntity> vmsOnHost = new ArrayList<>(h.getGuestList());
-            System.out.printf("  [DEBUG] Overloaded Host #%d has %d VMs%n",
-                h.getId(), vmsOnHost.size());
-            // sort ascending by allocated MIPS — move lightest first
+            double allocMips = hostMipsSnapshot.getOrDefault(h.getId(), 0.0);
+            double u = allocMips / h.getTotalMips();
             vmsOnHost.sort(Comparator.comparingDouble(
-                v -> h.getTotalAllocatedMipsForGuest(v)
+                v -> vmMipsSnapshot.getOrDefault(v.getId(), 0.0)
             ));
-            double u = h.getUtilizationOfCpu();
             for (GuestEntity v : vmsOnHost) {
                 if (u <= T_UPPER) break;
                 candidates.add(v);
-                u -= h.getTotalAllocatedMipsForGuest(v) / h.getTotalMips();
+                u -= vmMipsSnapshot.getOrDefault(v.getId(), 0.0) / h.getTotalMips();
             }
         }
 
         for (PowerHost h : underloaded) {
-            System.out.printf("  [DEBUG] Underloaded Host #%d has %d VMs%n",
-                h.getId(), h.getGuestList().size());
             candidates.addAll(h.getGuestList());
         }
 
         System.out.printf("  [Consolidation] Candidates: %d%n", candidates.size());
 
-        // ── Step 4: FFD placement using snapshot MIPS values ──
-        candidates.sort((a, b) -> {
-            double mipsA = vmSnapshot.containsKey(a.getId()) ? vmSnapshot.get(a.getId())[0] : 0;
-            double mipsB = vmSnapshot.containsKey(b.getId()) ? vmSnapshot.get(b.getId())[0] : 0;
-            return Double.compare(mipsB, mipsA); // descending
-        });
+        // ── Step 4: FFD — sort by DECREASING MIPS ──
+        candidates.sort((a, b) -> Double.compare(
+            vmMipsSnapshot.getOrDefault(b.getId(), 0.0),
+            vmMipsSnapshot.getOrDefault(a.getId(), 0.0)
+        ));
 
-        // Track planned utilization increases per host
-        Map<Integer, Double> plannedExtra = new HashMap<>();
+        // Track committed MIPS per destination host within this planning cycle
+        Map<Integer, Double> committed = new HashMap<>();
 
         for (GuestEntity vm : candidates) {
-            PowerHost dest = greedyFit(vm, plannedExtra);
+            PowerHost dest = greedyFit(vm, committed);
             if (dest != null) {
                 plan.add(new GuestMapping(vm, dest));
                 migrations++;
-                // account for this VM's MIPS in future placements
-                double vmMips = vmSnapshot.containsKey(vm.getId())
-                    ? vmSnapshot.get(vm.getId())[0] : 0;
-                plannedExtra.merge(dest.getId(),
-                    vmMips / dest.getTotalMips(), Double::sum);
-                System.out.printf("  [Migration] VM #%d → Host #%d%n",
-                    vm.getId(), dest.getId());
+                double vmMips = vmMipsSnapshot.getOrDefault(vm.getId(), 0.0);
+                double vmPeakMips = ((Vm) vm).getMips();
+                committed.merge(dest.getId(), vmMips, Double::sum);
+                committedPeakMips.merge(dest.getId(), vmPeakMips, Double::sum);  // Track peak
+                System.out.printf("  [Migration] VM #%d (%.0f MIPS) → Host #%d%n",
+                    ((Vm) vm).getId(), vmMips, dest.getId());
             } else {
-                System.out.printf("  [Migration] VM #%d → no suitable host found%n",
-                    vm.getId());
+                System.out.printf("  [Migration] VM #%d → no suitable host%n",
+                    ((Vm) vm).getId());
             }
         }
 
@@ -121,25 +136,38 @@ public class HeuristicConsolidationPolicy
         return plan;
     }
 
-    private PowerHost greedyFit(GuestEntity vm, Map<Integer, Double> plannedExtra) {
+    private PowerHost greedyFit(GuestEntity vm, Map<Integer, Double> committed) {
         PowerHost source = (PowerHost) ((Vm) vm).getHost();
-        double vmMips = vmSnapshot.containsKey(vm.getId())
-            ? vmSnapshot.get(vm.getId())[0]
-            : ((Vm) vm).getMips();
+        double vmEffectiveMips = vmMipsSnapshot.getOrDefault(vm.getId(), ((Vm) vm).getMips());
+        double vmPeakMips = ((Vm) vm).getMips();
+
+        PowerHost bestHost = null;
+        double bestUtil = -1;
 
         for (PowerHost h : this.<PowerHost>getHostList()) {
             if (h.equals(source)) continue;
-            double extra = plannedExtra.getOrDefault(h.getId(), 0.0);
-            double newUtil = h.getUtilizationOfCpu() + extra + vmMips / h.getTotalMips();
-            boolean cpuOk = newUtil <= T_UPPER;
-            boolean suitable = h.isSuitableForGuest(vm);
-            System.out.printf("    greedyFit VM#%d → Host#%d: newUtil=%.2f cpuOk=%b suitable=%b%n",
-                vm.getId(), h.getId(), newUtil, cpuOk, suitable);
-            if (cpuOk && suitable) {
-                return h;
+
+            double reservedPeak = h.getGuestList().stream()
+                .mapToDouble(g -> ((Vm) g).getMips()).sum();
+            double committedPeak = committedPeakMips.getOrDefault(h.getId(), 0.0);
+            if (reservedPeak + committedPeak + vmPeakMips > h.getTotalMips()) continue;
+
+            double currentMips   = hostMipsSnapshot.getOrDefault(h.getId(), 0.0);
+            double committedMips = committed.getOrDefault(h.getId(), 0.0);
+            double newUtil = (currentMips + committedMips + vmEffectiveMips) / h.getTotalMips();
+
+            boolean ramOk = h.getRamProvisioner().isSuitableForGuest((Vm) vm, ((Vm) vm).getRam());
+            boolean bwOk  = h.getBwProvisioner().isSuitableForGuest((Vm) vm, ((Vm) vm).getBw());
+
+            if (newUtil <= T_UPPER && ramOk && bwOk) {
+                // Pick the host that is MOST loaded after placement (best-fit)
+                if (newUtil > bestUtil) {
+                    bestUtil = newUtil;
+                    bestHost = h;
+                }
             }
         }
-        return null;
+        return bestHost;
     }
 
     @Override

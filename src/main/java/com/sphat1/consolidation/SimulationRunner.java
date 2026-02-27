@@ -1,11 +1,13 @@
 package com.sphat1.consolidation;
-import com.sphat1.consolidation.ConsolidatingDatacenter;
+//import com.sphat1.consolidation.ConsolidatingDatacenter;
 
 import org.cloudbus.cloudsim.*;
 import org.cloudbus.cloudsim.core.CloudSim;
 import org.cloudbus.cloudsim.power.*;
 import org.cloudbus.cloudsim.selectionPolicies.SelectionPolicyMinimumUtilization;
+import java.util.Arrays;
 import java.util.*;
+
 
 public class SimulationRunner {
 
@@ -28,24 +30,27 @@ public class SimulationRunner {
         DatacenterCharacteristics chars = new DatacenterCharacteristics(
             "x86", "Linux", "Xen", hosts, 0, 0, 0, 0, 0);
 
-     // Make sure BOTH the type AND constructor say ConsolidatingDatacenter:
         ConsolidatingDatacenter dc = new ConsolidatingDatacenter(
             "Datacenter", chars, policy, new LinkedList<>(), 300);
         dc.setDisableMigrations(false);
 
         DatacenterBroker broker = new DatacenterBroker("Broker");
 
-        int[] mipsValues = generateMips(scenario);
+        // All VMs have the same peak capacity — utilization model drives actual load
+        int[] mipsValues = new int[DataCenterConfig.NUM_VMS];
+        Arrays.fill(mipsValues, 100);
         List<PowerVm> vms = DataCenterConfig.createVms(broker.getId(), mipsValues);
         broker.submitGuestList(new ArrayList<>(vms));
 
+        Random rand = new Random(42);
         List<Cloudlet> cloudlets = new ArrayList<>();
+
         for (int i = 0; i < DataCenterConfig.NUM_VMS; i++) {
-            UtilizationModel um = new UtilizationModelFull();
-            // length = 20000 MI; slowest VM is 20 MIPS → finishes in 20000/20 = 1000s
-            // scheduling interval = 300s → consolidation fires at t=300, t=600, t=900
-            // before cloudlets finish at t=1000
-            long length = 20_000L;
+            UtilizationModel um = createUtilizationModel(scenario, i, rand);
+
+            // 80,000 MI — at 200 MIPS * 50% avg utilization = 100 effective MIPS
+            // finishes in ~800s, so consolidation fires at t=300 and t=600 mid-run
+            long length = 80_000L;
             Cloudlet cl = new Cloudlet(i, length, 1, 300, 300, um, um, um);
             cl.setUserId(broker.getId());
             cloudlets.add(cl);
@@ -61,30 +66,59 @@ public class SimulationRunner {
         System.out.printf("SLA Violations: %d%n", policy.getSlaViolations());
     }
 
-    static int[] generateMips(WorkloadGenerator.Scenario scenario) {
-        Random rand = new Random(42);
-        int[] mips = new int[DataCenterConfig.NUM_VMS];
+    static UtilizationModel createUtilizationModel(
+            WorkloadGenerator.Scenario scenario, int vmIndex, Random rand) {
 
-        for (int i = 0; i < DataCenterConfig.NUM_VMS; i++) {
-            mips[i] = switch (scenario) {
-                // STEADY: 2-3 VMs per host, each 20-40 MIPS
-                // avg ~2.5 * 30 = 75 MIPS / 200 = 37.5% utilization → well within bounds
-                case STEADY -> 20 + rand.nextInt(20);   // 20–40 MIPS
+        switch (scenario) {
 
-                // PEAK: intentionally overload ~3 hosts, leave ~7 hosts as migration targets
-                // Strategy: 6 "heavy" VMs at 90-110 MIPS placed 2-per-host on 3 hosts → >90%
-                // remaining 19 VMs at 20-35 MIPS fill the other 7 hosts at 25-50%
-                case PEAK -> (i < 6)
-                    ? 90 + rand.nextInt(20)             // 90–110 MIPS (overloads host)
-                    : 20 + rand.nextInt(15);            // 20–35 MIPS (normal)
+            case STEADY: {
+                // All VMs oscillate gently around 35% utilization
+                // Amplitude of 0.10 means swing between 25% and 45%
+                // With 2-3 VMs per host, host utilization stays between 50-135%
+                // — enough for some hosts to drift above T_UPPER or below T_LOWER
+                // Random phase spreads VMs so they don't all peak simultaneously
+                double base      = 0.35;
+                double amplitude = 0.10;
+                double frequency = 1.0 / 600.0;  // one cycle per 600s
+                double phase     = rand.nextDouble() * 2 * Math.PI;
+                return new UtilizationModelDynamic(base, amplitude, frequency, phase);
+            }
 
-                // VARIABLE: bimodal — some hosts underloaded (<20%), some overloaded (>80%)
-                // light VMs: 5-15 MIPS; heavy VMs: 85-100 MIPS
-                case VARIABLE -> (rand.nextBoolean())
-                    ? 5 + rand.nextInt(10)              // 5–15 MIPS (very light)
-                    : 85 + rand.nextInt(15);            // 85–100 MIPS (very heavy)
-            };
+            case PEAK: {
+                // All VMs have a low baseline (15-25%) representing off-peak load
+                // At t=400s a Gaussian spike pushes a random subset of VMs to ~90%
+                // This simulates a rush-hour event mid-simulation
+                // Hosts carrying spiking VMs become overloaded; consolidation responds
+                double base      = 0.15 + rand.nextDouble() * 0.10;  // 15–25%
+                double amplitude = 0.05;
+                double frequency = 1.0 / 800.0;
+                double phase     = rand.nextDouble() * 2 * Math.PI;
+
+                // ~40% of VMs participate in the spike (roughly 10 out of 25)
+                boolean spikes   = rand.nextDouble() < 0.40;
+                double peakTime  = 300.0;   // spike centred at t=400s
+                double peakAmp   = spikes ? 0.70 : 0.0;  // spiking VMs jump +70%
+                double peakWidth = 80.0;    // spike lasts roughly 160s (2 std devs)
+
+                return new UtilizationModelDynamic(
+                    base, amplitude, frequency, phase,
+                    peakTime, peakAmp, peakWidth);
+            }
+
+            case VARIABLE: {
+                // Each VM gets a random baseline (10–70%) and random amplitude (5–25%)
+                // Random frequencies mean VMs drift independently — genuinely mixed
+                // Some hosts will randomly accumulate high-util VMs → overloaded
+                // Others will have VMs all in their troughs simultaneously → underloaded
+                double base      = 0.10 + rand.nextDouble() * 0.60;  // 10–70%
+                double amplitude = 0.05 + rand.nextDouble() * 0.20;  // 5–25%
+                double frequency = (0.5 + rand.nextDouble()) / 600.0; // varied cycle lengths
+                double phase     = rand.nextDouble() * 2 * Math.PI;
+                return new UtilizationModelDynamic(base, amplitude, frequency, phase);
+            }
+
+            default:
+                throw new IllegalArgumentException("Unknown scenario: " + scenario);
         }
-        return mips;
     }
 }
