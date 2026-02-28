@@ -31,7 +31,7 @@ public class SimulationRunner {
             "x86", "Linux", "Xen", hosts, 0, 0, 0, 0, 0);
 
         ConsolidatingDatacenter dc = new ConsolidatingDatacenter(
-            "Datacenter", chars, policy, new LinkedList<>(), 300);
+            "Datacenter", chars, policy, new LinkedList<>(), 15); //from 300 to 15
         dc.setDisableMigrations(false);
 
         DatacenterBroker broker = new DatacenterBroker("Broker");
@@ -45,7 +45,9 @@ public class SimulationRunner {
         List<Cloudlet> cloudlets = new ArrayList<>();
         for (int i = 0; i < DataCenterConfig.NUM_VMS; i++) {
             UtilizationModel um = WorkloadGenerator.createUtilizationModel(scenario, i, rand);
-            Cloudlet cl = new Cloudlet(i, 80_000L, 1, 300, 300, um, um, um);
+//            Cloudlet cl = new Cloudlet(i, 80_000L, 1, 300, 300, um, um, um);
+         // Change 80_000L to 8_000_000L to keep the simulation running long enough to measure energy
+            Cloudlet cl = new Cloudlet(i, 8_000_000L, 1, 300, 300, um, um, um);
             cl.setUserId(broker.getId());
             cloudlets.add(cl);
         }

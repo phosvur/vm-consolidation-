@@ -16,14 +16,18 @@ public class DataCenterConfig {
         List<PowerHost> hosts = new ArrayList<>();
         for (int i = 0; i < NUM_HOSTS; i++) {
             List<Pe> pes = new ArrayList<>();
-            pes.add(new Pe(0, new PeProvisionerSimple(HOST_CPU))); // 400 MIPS
+            // Give each host 4 PEs so it can comfortably hold multiple VMs
+            for (int j = 0; j < 4; j++) {
+                pes.add(new Pe(j, new PeProvisionerSimple(HOST_CPU))); 
+            }
+            
             hosts.add(new PowerHost(
                 i,
-                new RamProvisionerSimple(16384),   // 16 GB RAM
-                new BwProvisionerSimple(100000),  // 100 Gbps BW
+                new RamProvisionerSimple(16384),
+                new BwProvisionerSimple(100000),
                 1_000_000,
                 pes,
-                new VmSchedulerTimeShared(pes),
+                new VmSchedulerTimeShared(pes), // Essential for VM sharing
                 new PowerModelSpecPowerHpProLiantMl110G4Xeon3040()
             ));
         }
