@@ -1,12 +1,14 @@
 package com.sphat1.consolidation;
 
 import org.cloudbus.cloudsim.Storage;
+import org.cloudbus.cloudsim.Vm;
 import org.cloudbus.cloudsim.core.CloudSim;
+//import org.cloudbus.cloudsim.core.CloudSimTags;
 import org.cloudbus.cloudsim.core.GuestEntity;
 import org.cloudbus.cloudsim.power.PowerDatacenter;
 import org.cloudbus.cloudsim.power.PowerHost;
 import org.cloudbus.cloudsim.VmAllocationPolicy.GuestMapping;
-import org.cloudbus.cloudsim.Vm;
+import org.cloudbus.cloudsim.core.CloudActionTags;
 
 import java.util.*;
 
@@ -26,19 +28,13 @@ public class ConsolidatingDatacenter extends PowerDatacenter {
 
     @Override
     protected void updateCloudletProcessing() {
-        // 1. Run consolidation logic
-        if (CloudSim.clock() > 0.1) { 
+        // Let super run first — this processes cloudlets and advances the clock.
+        // After super completes, VMs that have finished are already deallocated,
+        // so consolidation only sees live VMs.
+        super.updateCloudletProcessing();
+
+        if (CloudSim.clock() > 0.1) {
             runConsolidation();
-        }
-        
-        // 2. SAFETY CHECK: Catch the NullPointer before it happens
-        try {
-            super.updateCloudletProcessing();
-        } catch (NullPointerException e) {
-            // This happens when CloudSim tries to calculate power for a VM 
-            // that we just moved, but hasn't fully 'landed' on the new host yet.
-            // In simulation terms, it's safe to ignore this single tick error.
-            System.out.println("  [System] Synchronization tick ignored during migration.");
         }
     }
 
@@ -46,50 +42,44 @@ public class ConsolidatingDatacenter extends PowerDatacenter {
         List<GuestEntity> allVms = new ArrayList<>();
         for (PowerHost h : this.<PowerHost>getHostList()) {
             for (GuestEntity g : h.getGuestList()) {
-                // Only consider VMs not currently in flight
-                if (!((Vm) g).isInMigration()) {
-                    allVms.add(g);
-                }
+                Vm vm = (Vm) g;
+                if (vm.getHost() == null || vm.isInMigration()) continue;
+                allVms.add(g);
             }
         }
-        
         if (allVms.isEmpty()) return;
 
-        System.out.printf("%n[ConsolidatingDatacenter] Running consolidation at t=%.2f%n", CloudSim.clock());
+        System.out.printf("%n[ConsolidatingDatacenter] Running consolidation at t=%.2f with %d VMs%n",
+            CloudSim.clock(), allVms.size());
 
-        // Get the plan from our heuristic policy
+        consolidationPolicy.setExternalCallAllowed(true);
         List<GuestMapping> plan = consolidationPolicy.optimizeAllocation(allVms);
+        consolidationPolicy.setExternalCallAllowed(false);
 
-        // Execute migrations
+        int executed = 0;
         for (GuestMapping m : plan) {
-            Vm vm = (Vm) m.vm();
+            Vm vm                = (Vm) m.vm();
             PowerHost targetHost = (PowerHost) m.host();
+
+            if (vm.getHost() == null) {
+                System.out.printf("  [Skipped] VM #%d already destroyed%n", vm.getId());
+                continue;
+            }
+
             PowerHost sourceHost = (PowerHost) vm.getHost();
+            if (targetHost.equals(sourceHost)) continue;
 
-            // Guard: If sourceHost is null, the VM is already in transit
-            if (sourceHost == null || targetHost.equals(sourceHost)) continue;
+            System.out.printf("  [Executing] Migrating VM #%d Host #%d -> Host #%d%n",
+                vm.getId(), sourceHost.getId(), targetHost.getId());
 
-            System.out.printf("  [Executing] Migrating VM #%d -> Host #%d%n", vm.getId(), targetHost.getId());
-
-            sourceHost.guestDestroy(vm);
-            if (targetHost.guestCreate(vm)) {
-                vm.setHost(targetHost);
-            }
+            // Use CloudSim's built-in migration path so it properly
+            // handles cloudlet scheduler handoff between hosts.
+            Map<String, Object> migrate = new HashMap<>();
+            migrate.put("vm", vm);
+            migrate.put("host", targetHost);
+            sendNow(getId(), CloudActionTags.VM_MIGRATE, migrate);
+            executed++;
         }
-
-     // --- POWER MANAGEMENT UPDATE ---
-        int activeHosts = 0;
-        for (PowerHost h : this.<PowerHost>getHostList()) {
-            if (h.getGuestList().isEmpty()) {
-                // In CloudSim 7.x, we usually set the host to "Failed" or "Shut Down"
-                // to stop the power model from calculating idle power.
-                h.setFailed(true); 
-            } else {
-                activeHosts++;
-                // Re-enable the host if it was previously shut down and now has a VM
-                h.setFailed(false);
-            }
-        }
-        System.out.printf("  [Status] Active Hosts: %d / %d%n", activeHosts, getHostList().size());
+        System.out.printf("  [Consolidation] Queued %d migrations%n", executed);
     }
 }
