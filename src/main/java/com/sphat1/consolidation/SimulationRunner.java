@@ -47,7 +47,9 @@ public class SimulationRunner {
             UtilizationModel um = WorkloadGenerator.createUtilizationModel(scenario, i, rand);
 //            Cloudlet cl = new Cloudlet(i, 80_000L, 1, 300, 300, um, um, um);
          // Change 80_000L to 8_000_000L to keep the simulation running long enough to measure energy
-            Cloudlet cl = new Cloudlet(i, 8_000_000L, 1, 300, 300, um, um, um);
+         // 80 million instructions means at 100 MIPS, it runs for 800,000 seconds
+            long length = 80_000_000L; 
+            Cloudlet cl = new Cloudlet(i, length, 1, 300, 300, um, um, um);
             cl.setUserId(broker.getId());
             cloudlets.add(cl);
         }
