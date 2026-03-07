@@ -14,7 +14,7 @@ import org.cloudbus.cloudsim.power.PowerHost;
 import org.cloudbus.cloudsim.power.PowerVmAllocationPolicyMigrationAbstract;
 import org.cloudbus.cloudsim.selectionPolicies.SelectionPolicy;
 
-@SuppressWarnings("deprecation")  // Suppress deprecated warnings for CloudSim 7.0.1
+@SuppressWarnings("deprecation")
 public class HeuristicConsolidationPolicy
         extends PowerVmAllocationPolicyMigrationAbstract {
 
@@ -22,15 +22,23 @@ public class HeuristicConsolidationPolicy
     static final double T_LOWER = 0.20;
 
     private int migrations    = 0;
-    private int slaViolations = 0;
 
-    // Snapshot: vmId → allocated MIPS (captured while VMs are alive)
-    private final Map<Integer, Double> vmMipsSnapshot = new HashMap<>();
-    // Snapshot: hostId → total allocated MIPS across all its VMs
-    private final Map<Integer, Double> hostMipsSnapshot = new HashMap<>();
-    
-    // Track committed peak MIPS per host for this planning cycle
+    // BUG FIX: SLA violations are now counted at the VM level, not per overloaded host.
+    // An SLA violation occurs when a VM's CPU demand cannot be fully satisfied by its host.
+    // We track total violation-seconds (time * unmet fraction) for a richer metric,
+    // plus a simple event counter.
+    private int    slaViolationEvents   = 0;   // number of VM-ticks where demand > supply
+    private double slaViolationTime     = 0.0; // total seconds of violation across all VMs
+
+    // Snapshot: vmId → effective (utilized) MIPS at snapshot time
+    private final Map<Integer, Double> vmMipsSnapshot    = new HashMap<>();
+    // Snapshot: hostId → total effective MIPS across all its VMs
+    private final Map<Integer, Double> hostMipsSnapshot  = new HashMap<>();
+    // Track committed peak MIPS per host within one planning cycle
     private final Map<Integer, Double> committedPeakMips = new HashMap<>();
+
+    // Time of last consolidation tick (used to compute violation-seconds)
+    private double lastTickTime = 0.0;
 
     public HeuristicConsolidationPolicy(
             List<? extends Host> hosts,
@@ -42,25 +50,29 @@ public class HeuristicConsolidationPolicy
     public List<GuestMapping> optimizeAllocation(List<? extends GuestEntity> vmList) {
         List<GuestMapping> plan = new ArrayList<>();
 
-     // ── Step 1: snapshot MIPS allocations before any deallocation ──
+        // ── Step 1: snapshot MIPS allocations ──
         vmMipsSnapshot.clear();
         hostMipsSnapshot.clear();
-        committedPeakMips.clear();  // Reset committed peak tracking
-        
-        // 🔧 NEW: Avoid t=0 instability (CloudSim startup artifacts)
-        if (org.cloudbus.cloudsim.core.CloudSim.clock() <= 0.1) {
-            System.out.println("  [Consolidation] Skipping snapshot at t=" + org.cloudbus.cloudsim.core.CloudSim.clock());
-            return new ArrayList<>();  // Return empty plan
+        committedPeakMips.clear();
+
+        double now = org.cloudbus.cloudsim.core.CloudSim.clock();
+        double tickDuration = now - lastTickTime;
+        lastTickTime = now;
+
+        // Skip t=0 startup artifacts
+        if (now <= 0.1) {
+            System.out.println("  [Consolidation] Skipping snapshot at t=" + now);
+            return new ArrayList<>();
         }
 
         for (PowerHost h : this.<PowerHost>getHostList()) {
             double hostTotal = 0;
             for (GuestEntity g : h.getGuestList()) {
-                double vmPeakMips = ((Vm) g).getMips();
+                Vm vm = (Vm) g;
+                double vmPeakMips = vm.getMips();
                 double utilFraction = 0;
-                for (Cloudlet rc :
-                        ((Vm) g).getCloudletScheduler().getCloudletExecList()) {
-                    utilFraction += rc.getUtilizationOfCpu(org.cloudbus.cloudsim.core.CloudSim.clock());
+                for (Cloudlet rc : vm.getCloudletScheduler().getCloudletExecList()) {
+                    utilFraction += rc.getUtilizationOfCpu(now);
                 }
                 utilFraction = Math.min(1.0, utilFraction);
                 double effectiveMips = vmPeakMips * utilFraction;
@@ -70,7 +82,30 @@ public class HeuristicConsolidationPolicy
             hostMipsSnapshot.put(h.getId(), hostTotal);
         }
 
-        // ── Step 2: classify hosts using snapshot utilization ──
+        // ── Step 2: classify hosts + measure SLA violations ──
+        // BUG FIX: SLA violations are measured per VM, per tick.
+        // A violation occurs when the host's total demanded MIPS exceeds its capacity,
+        // meaning some VMs are getting less than they asked for.
+        for (PowerHost h : this.<PowerHost>getHostList()) {
+            double demandedMips = hostMipsSnapshot.getOrDefault(h.getId(), 0.0);
+            double capacityMips = h.getTotalMips();
+
+            if (demandedMips > capacityMips && !h.getGuestList().isEmpty()) {
+                // Oversubscription ratio: how much demand exceeds supply
+                double oversubscription = demandedMips - capacityMips;
+                // Each VM on this host experiences a proportional violation
+                for (GuestEntity g : h.getGuestList()) {
+                    double vmDemand = vmMipsSnapshot.getOrDefault(g.getId(), 0.0);
+                    if (vmDemand > 0) {
+                        double vmViolationFraction = Math.min(1.0, oversubscription / demandedMips);
+                        slaViolationEvents++;
+                        slaViolationTime += vmViolationFraction * tickDuration;
+                    }
+                }
+            }
+        }
+
+        // ── Step 3: classify hosts for migration decisions ──
         List<PowerHost> overloaded  = new ArrayList<>();
         List<PowerHost> underloaded = new ArrayList<>();
 
@@ -82,7 +117,6 @@ public class HeuristicConsolidationPolicy
                 h.getId(), u, vmCount);
             if (u > T_UPPER) {
                 overloaded.add(h);
-                slaViolations++;
             } else if (u < T_LOWER && vmCount > 0) {
                 underloaded.add(h);
             }
@@ -90,7 +124,7 @@ public class HeuristicConsolidationPolicy
         System.out.printf("  [Consolidation] Overloaded: %d, Underloaded: %d%n",
             overloaded.size(), underloaded.size());
 
-        // ── Step 3: select candidate VMs ──
+        // ── Step 4: select candidate VMs ──
         List<GuestEntity> candidates = new ArrayList<>();
 
         for (PowerHost h : overloaded) {
@@ -113,26 +147,22 @@ public class HeuristicConsolidationPolicy
 
         System.out.printf("  [Consolidation] Candidates: %d%n", candidates.size());
 
-        // ── Step 4: FFD — sort by DECREASING MIPS ──
+        // ── Step 5: FFD — sort by DECREASING MIPS ──
         candidates.sort((a, b) -> Double.compare(
             vmMipsSnapshot.getOrDefault(b.getId(), 0.0),
             vmMipsSnapshot.getOrDefault(a.getId(), 0.0)
         ));
 
-        // Track committed MIPS per destination host within this planning cycle
         Map<Integer, Double> committed = new HashMap<>();
 
         for (GuestEntity vm : candidates) {
-            // Prevent re-migrating VMs already in migration
-            if (((Vm) vm).isInMigration()) {
-                continue;
-            }
-            
+            if (((Vm) vm).isInMigration()) continue;
+
             PowerHost dest = greedyFit(vm, committed);
             if (dest != null) {
                 plan.add(new GuestMapping(vm, dest));
                 migrations++;
-                double vmMips = vmMipsSnapshot.getOrDefault(vm.getId(), 0.0);
+                double vmMips     = vmMipsSnapshot.getOrDefault(vm.getId(), 0.0);
                 double vmPeakMips = ((Vm) vm).getMips();
                 committed.merge(dest.getId(), vmMips, Double::sum);
                 committedPeakMips.merge(dest.getId(), vmPeakMips, Double::sum);
@@ -159,7 +189,7 @@ public class HeuristicConsolidationPolicy
         for (PowerHost h : this.<PowerHost>getHostList()) {
             if (h.equals(source)) continue;
 
-            double reservedPeak = h.getGuestList().stream()
+            double reservedPeak  = h.getGuestList().stream()
                 .mapToDouble(g -> ((Vm) g).getMips()).sum();
             double committedPeak = committedPeakMips.getOrDefault(h.getId(), 0.0);
             if (reservedPeak + committedPeak + vmPeakMips > h.getTotalMips()) continue;
@@ -172,7 +202,6 @@ public class HeuristicConsolidationPolicy
             boolean bwOk  = h.getBwProvisioner().isSuitableForGuest((Vm) vm, ((Vm) vm).getBw());
 
             if (newUtil <= T_UPPER && ramOk && bwOk) {
-                // Pick the host that is MOST loaded after placement (best-fit)
                 if (newUtil > bestUtil) {
                     bestUtil = newUtil;
                     bestHost = h;
@@ -187,6 +216,10 @@ public class HeuristicConsolidationPolicy
         return host.getUtilizationOfCpu() > T_UPPER;
     }
 
-    public int getMigrations()    { return migrations;    }
-    public int getSlaViolations() { return slaViolations; }
+    public int getMigrations()         { return migrations;          }
+    public int getSlaViolationEvents() { return slaViolationEvents;  }
+    public double getSlaViolationTime(){ return slaViolationTime;    }
+
+    // Convenience: keep old getSlaViolations() name pointing to event count
+    public int getSlaViolations()      { return slaViolationEvents;  }
 }

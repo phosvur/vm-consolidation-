@@ -9,7 +9,7 @@
 	public class DataCenterConfig {
 	
 	    public static final int NUM_HOSTS = 10;
-	    public static final int HOST_CPU  = 100;   // doubled from 200
+	    public static final int HOST_CPU  = 200;   // doubled from 200
 	    public static final int NUM_VMS   = 25;
 	
 	    public static List<PowerHost> createHosts() {

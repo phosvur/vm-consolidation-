@@ -1,0 +1,7 @@
+Scenario,PolicyType,Energy_kWh,Migrations,SLAViolationEvents,SLAViolationTime_s
+STEADY,Heuristic,0.000000,34,0,0.0000
+STEADY,Baseline,0.003801,0,0,0.0000
+PEAK,Heuristic,0.000000,74,0,0.0000
+PEAK,Baseline,0.003801,0,0,0.0000
+VARIABLE,Heuristic,0.000000,53,0,0.0000
+VARIABLE,Baseline,0.003801,0,0,0.0000
