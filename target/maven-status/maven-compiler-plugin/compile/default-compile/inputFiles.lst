@@ -1,4 +1,8 @@
-C:\Users\ASUS\eclipse-workspace\vm-consolidation\src\main\java\com\sphat1\consolidation\DataCenterConfig.java
-C:\Users\ASUS\eclipse-workspace\vm-consolidation\src\main\java\com\sphat1\consolidation\HeuristicConsolidationPolicy.java
-C:\Users\ASUS\eclipse-workspace\vm-consolidation\src\main\java\com\sphat1\consolidation\SimulationRunner.java
-C:\Users\ASUS\eclipse-workspace\vm-consolidation\src\main\java\com\sphat1\consolidation\WorkloadGenerator.java
+/home/svi/projects/virtualization/vm-consolidation/vm-consolidation-/src/main/java/com/sphat1/consolidation/BaselineRunner.java
+/home/svi/projects/virtualization/vm-consolidation/vm-consolidation-/src/main/java/com/sphat1/consolidation/ConsolidatingDatacenter.java
+/home/svi/projects/virtualization/vm-consolidation/vm-consolidation-/src/main/java/com/sphat1/consolidation/DataCenterConfig.java
+/home/svi/projects/virtualization/vm-consolidation/vm-consolidation-/src/main/java/com/sphat1/consolidation/HeuristicConsolidationPolicy.java
+/home/svi/projects/virtualization/vm-consolidation/vm-consolidation-/src/main/java/com/sphat1/consolidation/ResultsAggregator.java
+/home/svi/projects/virtualization/vm-consolidation/vm-consolidation-/src/main/java/com/sphat1/consolidation/SimulationRunner.java
+/home/svi/projects/virtualization/vm-consolidation/vm-consolidation-/src/main/java/com/sphat1/consolidation/UtilizationModelDynamic.java
+/home/svi/projects/virtualization/vm-consolidation/vm-consolidation-/src/main/java/com/sphat1/consolidation/WorkloadGenerator.java

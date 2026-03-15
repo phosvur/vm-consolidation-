@@ -162,20 +162,34 @@ public class HeuristicConsolidationPolicy
             if (dest != null) {
                 plan.add(new GuestMapping(vm, dest));
                 migrations++;
+                
+                // Safe retrieval with default
                 double vmMips     = vmMipsSnapshot.getOrDefault(vm.getId(), 0.0);
                 double vmPeakMips = ((Vm) vm).getMips();
-                committed.merge(dest.getId(), vmMips, Double::sum);
-                committedPeakMips.merge(dest.getId(), vmPeakMips, Double::sum);
+
+                // Merge safely — never null
+                committed.merge(dest.getId(), vmMips, (oldVal, newVal) -> {
+                    if (oldVal == null) return newVal;
+                    if (newVal == null) return oldVal;
+                    return oldVal + newVal;
+                });
+                committedPeakMips.merge(dest.getId(), vmPeakMips, (oldVal, newVal) -> {
+                    if (oldVal == null) return newVal;
+                    if (newVal == null) return oldVal;
+                    return oldVal + newVal;
+                });
+
                 System.out.printf("  [Migration] VM #%d (%.0f MIPS) → Host #%d%n",
                     ((Vm) vm).getId(), vmMips, dest.getId());
             } else {
                 System.out.printf("  [Migration] VM #%d → no suitable host%n",
                     ((Vm) vm).getId());
             }
-        }
+        }   
 
         System.out.printf("  [Consolidation] Migration plan size: %d%n", plan.size());
         return plan;
+
     }
 
     private PowerHost greedyFit(GuestEntity vm, Map<Integer, Double> committed) {
